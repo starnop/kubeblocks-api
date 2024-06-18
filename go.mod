@@ -1,6 +1,6 @@
 module github.com/starnop/kubeblocks-api
 
-go 1.22.4
+go 1.17
 
 require (
 	k8s.io/api v0.28.3
