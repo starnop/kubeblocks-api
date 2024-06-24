@@ -148,6 +148,16 @@ type InstanceTemplate struct {
 	VolumeClaimTemplates []corev1.PersistentVolumeClaim `json:"volumeClaimTemplates,omitempty"`
 }
 
+// InstanceTemplateIndexRanges defines the desired IndexRanges of InstanceTemplate
+type InstanceTemplateIndexRanges struct {
+	// Name, the name of the InstanceTemplate.
+	Name string `json:"name"`
+
+	// Defines IndexRanges for this template.
+	// +optional
+	IndexRanges []string `json:"indexRanges,omitempty"`
+}
+
 // InstanceSetSpec defines the desired state of InstanceSet
 type InstanceSetSpec struct {
 	// Specifies the desired number of replicas of the given Template.
@@ -157,6 +167,20 @@ type InstanceSetSpec struct {
 	// +kubebuilder:validation:Minimum=0
 	// +optional
 	Replicas *int32 `json:"replicas,omitempty"`
+
+	// Specifies the desired IndexRanges of each InstanceTemplate.
+	// The IndexRanges is used to specify the ordinal of the instance (pod) names to be generated under an InstanceTemplate.
+	//
+	// For example, if IndexRanges are ["0-1", "7-7"], then the instance names generated under this InstanceTemplate would be
+	// $(cluster.name)-$(component.name)-$(template.name)-0、$(cluster.name)-$(component.name)-$(template.name)-1 and
+	// $(cluster.name)-$(component.name)-$(template.name)-7
+	//
+	// +optional
+	// +patchMergeKey=name
+	// +patchStrategy=merge,retainKeys
+	// +listType=map
+	// +listMapKey=name
+	TemplatesIndexRanges []InstanceTemplateIndexRanges `json:"templatesIndexRanges,omitempty" patchStrategy:"merge,retainKeys" patchMergeKey:"name"`
 
 	// Defines the minimum number of seconds a newly created pod should be ready
 	// without any of its container crashing to be considered available.
