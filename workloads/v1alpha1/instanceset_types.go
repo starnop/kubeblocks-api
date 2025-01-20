@@ -20,6 +20,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
 // EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
@@ -72,6 +73,35 @@ type SchedulingPolicy struct {
 	//
 	// +optional
 	TopologySpreadConstraints []corev1.TopologySpreadConstraint `json:"topologySpreadConstraints,omitempty"`
+}
+
+// InstanceUpdateStrategy indicates the strategy that the InstanceSet
+// controller will use to perform updates. It includes any additional parameters
+// necessary to perform the update for the indicated strategy.
+type InstanceUpdateStrategy struct {
+	// Partition indicates the number of pods that should be updated during a rolling update.
+	// The remaining pods will remain untouched. This is helpful in defining how many pods
+	// should participate in the update process. The update process will follow the order
+	// of pod names in descending lexicographical (dictionary) order. The default value is
+	// Replicas (i.e., update all pods).
+	// +optional
+	Partition *int32 `json:"partition,omitempty"`
+	// The maximum number of pods that can be unavailable during the update.
+	// Value can be an absolute number (ex: 5) or a percentage of desired pods (ex: 10%).
+	// Absolute number is calculated from percentage by rounding up. This can not be 0.
+	// Defaults to 1. The field applies to all pods. That means if there is any unavailable pod,
+	// it will be counted towards MaxUnavailable.
+	// +optional
+	MaxUnavailable *intstr.IntOrString `json:"maxUnavailable,omitempty"`
+	// Members(Pods) update strategy.
+	//
+	// - serial: update Members one by one that guarantee minimum component unavailable time.
+	// - bestEffortParallel: update Members in parallel that guarantee minimum component un-writable time.
+	// - parallel: force parallel
+	//
+	// +kubebuilder:validation:Enum={Serial,BestEffortParallel,Parallel}
+	// +optional
+	MemberUpdateStrategy *MemberUpdateStrategy `json:"memberUpdateStrategy,omitempty"`
 }
 
 // Range represents a range with a start and an end value.
@@ -168,6 +198,33 @@ type InstanceTemplate struct {
 	// Add new or override existing volume claim templates.
 	// +optional
 	VolumeClaimTemplates []corev1.PersistentVolumeClaim `json:"volumeClaimTemplates,omitempty"`
+}
+
+// InstanceTemplateStatus aggregates the status of replicas for each InstanceTemplate
+type InstanceTemplateStatus struct {
+	// Name, the name of the InstanceTemplate.
+	Name string `json:"name"`
+
+	// Replicas is the number of replicas of the InstanceTemplate.
+	// +optional
+	Replicas int32 `json:"replicas,omitempty"`
+
+	// ReadyReplicas is the number of Pods that have a Ready Condition.
+	// +optional
+	ReadyReplicas int32 `json:"readyReplicas,omitempty"`
+
+	// AvailableReplicas is the number of Pods that ready for at least minReadySeconds.
+	// +optional
+	AvailableReplicas int32 `json:"availableReplicas,omitempty"`
+
+	// currentReplicas is the number of instances created by the InstanceSet controller from the InstanceSet version
+	// indicated by CurrentRevisions.
+	CurrentReplicas int32 `json:"currentReplicas,omitempty"`
+
+	// UpdatedReplicas is the number of Pods created by the InstanceSet controller from the InstanceSet version
+	// indicated by UpdateRevisions.
+	// +optional
+	UpdatedReplicas int32 `json:"updatedReplicas,omitempty"`
 }
 
 // InstanceSetSpec defines the desired state of InstanceSet
@@ -277,13 +334,30 @@ type InstanceSetSpec struct {
 	// +optional
 	PodManagementPolicy appsv1.PodManagementPolicyType `json:"podManagementPolicy,omitempty"`
 
+	// Controls the concurrency of pods during initial scale up, when replacing pods on nodes,
+	// or when scaling down. It only used when `PodManagementPolicy` is set to `Parallel`.
+	// The default Concurrency is 100%.
+	//
+	// +optional
+	ParallelPodManagementConcurrency *intstr.IntOrString `json:"parallelPodManagementConcurrency,omitempty"`
+
+	// PodUpdatePolicy indicates how pods should be updated
+	//
+	// - `StrictInPlace` indicates that only allows in-place upgrades.
+	// Any attempt to modify other fields will be rejected.
+	// - `PreferInPlace` indicates that we will first attempt an in-place upgrade of the Pod.
+	// If that fails, it will fall back to the ReCreate, where pod will be recreated.
+	// Default value is "PreferInPlace"
+	//
+	// +optional
+	PodUpdatePolicy PodUpdatePolicyType `json:"podUpdatePolicy,omitempty"`
+
 	// Indicates the StatefulSetUpdateStrategy that will be
 	// employed to update Pods in the InstanceSet when a revision is made to
 	// Template.
-	// UpdateStrategy.Type will be set to appsv1.OnDeleteStatefulSetStrategyType if MemberUpdateStrategy is not nil
 	//
 	// Note: This field will be removed in future version.
-	UpdateStrategy appsv1.StatefulSetUpdateStrategy `json:"updateStrategy,omitempty"`
+	UpdateStrategy *InstanceUpdateStrategy `json:"updateStrategy,omitempty"`
 
 	// A list of roles defined in the system.
 	//
@@ -400,12 +474,17 @@ type InstanceSetStatus struct {
 	//
 	// +optional
 	UpdateRevisions map[string]string `json:"updateRevisions,omitempty"`
+
+	// TemplatesStatus represents status of each instance generated by InstanceTemplates
+	// +optional
+	TemplatesStatus []InstanceTemplateStatus `json:"templatesStatus,omitempty"`
 }
 
 // +genclient
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:categories={kubeblocks,all},shortName=its
+// +kubebuilder:subresource:scale:specpath=.spec.replicas,statuspath=.status.replicas
+// +kubebuilder:resource:categories={kubeblocks},shortName=its
 // +kubebuilder:printcolumn:name="LEADER",type="string",JSONPath=".status.membersStatus[?(@.role.isLeader==true)].podName",description="leader instance name."
 // +kubebuilder:printcolumn:name="READY",type="string",JSONPath=".status.readyReplicas",description="ready replicas."
 // +kubebuilder:printcolumn:name="REPLICAS",type="string",JSONPath=".status.replicas",description="total replicas."
@@ -436,6 +515,18 @@ type InstanceSetList struct {
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []InstanceSet `json:"items"`
 }
+
+type PodUpdatePolicyType string
+
+const (
+	// StrictInPlacePodUpdatePolicyType indicates that only allows in-place upgrades.
+	// Any attempt to modify other fields will be rejected.
+	StrictInPlacePodUpdatePolicyType PodUpdatePolicyType = "StrictInPlace"
+
+	// PreferInPlacePodUpdatePolicyType indicates that we will first attempt an in-place upgrade of the Pod.
+	// If that fails, it will fall back to the ReCreate, where pod will be recreated.
+	PreferInPlacePodUpdatePolicyType PodUpdatePolicyType = "PreferInPlace"
+)
 
 type ReplicaRole struct {
 
@@ -504,7 +595,6 @@ type RoleProbe struct {
 	BuiltinHandler *string `json:"builtinHandlerName,omitempty"`
 
 	// Defines a custom method for role probing.
-	// If the BuiltinHandler meets the requirement, use it instead.
 	// Actions defined here are executed in series.
 	// Upon completion of all actions, the final output should be a single string representing the role name defined in spec.Roles.
 	// The latest [BusyBox](https://busybox.net/) image will be used if Image is not configured.
@@ -673,6 +763,10 @@ const (
 
 	// InstanceFailure is added in an instance set when at least one of its instances(pods) is in a `Failed` phase.
 	InstanceFailure ConditionType = "InstanceFailure"
+
+	// InstanceUpdateRestricted represents a ConditionType that indicates updates to an InstanceSet are blocked(when the
+	// PodUpdatePolicy is set to StrictInPlace but the pods cannot be updated in-place).
+	InstanceUpdateRestricted ConditionType = "InstanceUpdateRestricted"
 )
 
 const (
@@ -690,6 +784,9 @@ const (
 
 	// ReasonInstanceFailure is a reason for condition InstanceFailure.
 	ReasonInstanceFailure = "InstanceFailure"
+
+	// ReasonInstanceUpdateRestricted is a reason for condition InstanceUpdateRestricted.
+	ReasonInstanceUpdateRestricted = "InstanceUpdateRestricted"
 )
 
 const defaultInstanceTemplateReplicas = 1
